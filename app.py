@@ -25,7 +25,7 @@ import streamlit as st
 # ADP is source of truth.
 # =========================================================
 
-APP_TITLE = "UZIO vs ADP Comparison Tool"
+APP_TITLE = "UZIO vs ADP Federal and State Withholing Comparison Audit"
 OUTPUT_FILENAME = "UZIO_vs_ADP_Comparison_Report_ADP_SourceOfTruth.xlsx"
 
 # Preferred sheet names (tool will also match case-insensitively and by "contains")
