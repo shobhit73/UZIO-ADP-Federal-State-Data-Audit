@@ -27,7 +27,7 @@ import streamlit as st
 #   - Mismatches_Detail
 # ============================================================
 
-APP_TITLE = "UZIO vs ADP (Active Employees Only) — Mismatch Finder"
+APP_TITLE = "UZIO vs ADP Active Employees Only Federal and State Taxation Tool"
 OUTPUT_FILENAME = "UZIO_ADP_mismatches_active_only.xlsx"
 
 # Expected (but we also match case-insensitively and by 'contains')
