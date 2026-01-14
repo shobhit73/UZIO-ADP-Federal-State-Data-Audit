@@ -6,11 +6,10 @@ from typing import Dict, Any, Tuple, Optional, List
 import numpy as np
 import pandas as pd
 import streamlit as st
+from openpyxl.utils import get_column_letter
 
 # ============================================================
 # 1) UZIO enum -> ADP filing status label mapping (your mapping)
-#    Structure: {PREFIX: {SUFFIX: ADP_LABEL}}
-#    Example UZIO enum: "IL_SINGLE" => prefix="IL", suffix="SINGLE"
 # ============================================================
 FILING_STATUS_MAP: Dict[str, Dict[str, str]] = {
     "FEDERAL": {
@@ -105,7 +104,7 @@ FILING_STATUS_MAP: Dict[str, Dict[str, str]] = {
 }
 
 # ============================================================
-# 2) Money fields where UZIO is in cents (÷100) but ADP is dollars
+# 2) Defaults: UZIO cents fields
 # ============================================================
 DEFAULT_CENTS_FIELDS = {
     "FIT_ADDL_WITHHOLDING_PER_PAY_PERIOD",
@@ -116,82 +115,24 @@ DEFAULT_CENTS_FIELDS = {
 }
 
 # ============================================================
-# 3) Special rule: SIT allowances
-#    If SIT_TOTAL_ALLOWANCES missing, compare BASIC + ADDITIONAL
+# 3) Allowances logic
 # ============================================================
 SIT_TOTAL_ALLOWANCES_FIELD = "SIT_TOTAL_ALLOWANCES"
 
 SIT_TOTAL_ALLOWANCES_CANDS = ["SIT_TOTAL_ALLOWANCES", "SIT_ALLOWANCES", "STATE_ALLOWANCES"]
-
-SIT_BASIC_ALLOWANCE_CANDS = [
-    "SIT_BASIC_ALLOWANCE", "SIT_BASIC_ALLOWANCES", "STATE_BASIC_ALLOWANCE", "STATE_BASIC_ALLOWANCES",
-    "SIT_ALLOWANCE_BASIC", "SIT_ALLOWANCES_BASIC"
-]
-SIT_ADDITIONAL_ALLOWANCES_CANDS = [
-    "SIT_ADDITIONAL_ALLOWANCES", "SIT_ADDITIONAL_ALLOWANCE",
-    "STATE_ADDITIONAL_ALLOWANCES", "STATE_ADDITIONAL_ALLOWANCE",
-    "SIT_ALLOWANCE_ADDITIONAL", "SIT_ALLOWANCES_ADDITIONAL"
-]
+SIT_BASIC_ALLOWANCE_CANDS = ["SIT_BASIC_ALLOWANCE", "SIT_BASIC_ALLOWANCES", "STATE_BASIC_ALLOWANCE", "STATE_BASIC_ALLOWANCES", "SIT_ALLOWANCE_BASIC", "SIT_ALLOWANCES_BASIC"]
+SIT_ADDITIONAL_ALLOWANCES_CANDS = ["SIT_ADDITIONAL_ALLOWANCES", "SIT_ADDITIONAL_ALLOWANCE", "STATE_ADDITIONAL_ALLOWANCES", "STATE_ADDITIONAL_ALLOWANCE", "SIT_ALLOWANCE_ADDITIONAL", "SIT_ALLOWANCES_ADDITIONAL"]
 
 # ============================================================
-# 4) Column name detection candidates
+# 4) Key + status + name column candidates
 # ============================================================
 KEY_CANDIDATES = ["EMPLOYEE_ID", "ASSOCIATE_ID", "EE_ID", "EMP_ID", "WORKER_ID", "EMPLOYEEID"]
-STATUS_CANDIDATES = ["EMPLOYMENT_STATUS", "STATUS", "EE_STATUS"]
-
+STATUS_CANDIDATES = ["EMPLOYMENT_STATUS", "STATUS", "EE_STATUS", "EMPLOYEE_STATUS"]
 NAME_FIRST_CANDIDATES = ["FIRST_NAME", "EMPLOYEE_FIRST_NAME", "EE_FIRST_NAME", "WORKER_FIRST_NAME"]
-NAME_LAST_CANDIDATES  = ["LAST_NAME", "EMPLOYEE_LAST_NAME", "EE_LAST_NAME", "WORKER_LAST_NAME"]
+NAME_LAST_CANDIDATES = ["LAST_NAME", "EMPLOYEE_LAST_NAME", "EE_LAST_NAME", "WORKER_LAST_NAME"]
 
 # ============================================================
-# 5) Canonical field specs (tries to map ADP columns to UZIO columns)
-#    Everything else (optional) can be compared by relevant common columns.
-# ============================================================
-FIELD_SPECS = [
-    ("FIT_FILING_STATUS", "filing_status",
-     ["FIT_FILING_STATUS", "FEDERAL_FILING_STATUS", "FILING_STATUS_FEDERAL", "FIT_STATUS"],
-     ["FIT_FILING_STATUS", "FEDERAL_FILING_STATUS", "FEDERAL_FILINGSTATUS", "FIT_STATUS"]),
-    ("SIT_FILING_STATUS", "filing_status",
-     ["SIT_FILING_STATUS", "STATE_FILING_STATUS", "FILING_STATUS_STATE", "SIT_STATUS"],
-     ["SIT_FILING_STATUS", "STATE_FILING_STATUS", "SIT_STATUS", "SIT_FILINGSTATUS"]),
-
-    ("FIT_EXEMPT", "boolean",
-     ["FIT_EXEMPT", "FIT_WITHHOLDING_EXEMPT", "DO_NOT_CALCULATE_FIT", "FEDERAL_EXEMPT"],
-     ["FIT_EXEMPT", "FIT_WITHHOLDING_EXEMPT", "DO_NOT_CALCULATE_FIT", "FEDERAL_EXEMPT"]),
-    ("SIT_EXEMPT", "boolean",
-     ["SIT_EXEMPT", "SIT_WITHHOLDING_EXEMPT", "DO_NOT_CALCULATE_SIT", "STATE_EXEMPT"],
-     ["SIT_EXEMPT", "SIT_WITHHOLDING_EXEMPT", "DO_NOT_CALCULATE_SIT", "STATE_EXEMPT"]),
-
-    ("FIT_MULTIPLE_JOBS", "boolean",
-     ["FIT_MULTIPLE_JOBS", "MULTIPLE_JOBS", "TWO_JOBS", "HIGHER_WITHHOLDING"],
-     ["FIT_MULTIPLE_JOBS", "MULTIPLE_JOBS", "TWO_JOBS", "HIGHER_WITHHOLDING"]),
-
-    ("FIT_DEPENDENTS_AMOUNT", "money",
-     ["FIT_DEPENDENTS_AMOUNT", "DEPENDENTS_AMOUNT", "FIT_DEPENDENTS"],
-     ["FIT_DEPENDENTS_AMOUNT", "DEPENDENTS_AMOUNT", "FIT_DEPENDENTS"]),
-
-    ("FIT_OTHER_INCOME", "money",
-     ["FIT_OTHER_INCOME", "OTHER_INCOME"],
-     ["FIT_OTHER_INCOME", "OTHER_INCOME"]),
-
-    ("FIT_DEDUCTIONS_OVER_STANDARD", "money",
-     ["FIT_DEDUCTIONS_OVER_STANDARD", "DEDUCTIONS_OVER_STANDARD"],
-     ["FIT_DEDUCTIONS_OVER_STANDARD", "DEDUCTIONS_OVER_STANDARD"]),
-
-    ("FIT_CHILD_AND_DEPENDENT_TAX_CREDIT", "money",
-     ["FIT_CHILD_AND_DEPENDENT_TAX_CREDIT", "CHILD_DEP_CREDIT", "CHILDREN_CREDIT"],
-     ["FIT_CHILD_AND_DEPENDENT_TAX_CREDIT", "CHILD_DEP_CREDIT", "CHILDREN_CREDIT"]),
-
-    ("FIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "money",
-     ["FIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "FIT_ADDITIONAL_WITHHOLDING", "ADDITIONAL_FIT"],
-     ["FIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "FIT_ADDITIONAL_WITHHOLDING", "ADDITIONAL_FIT"]),
-
-    ("SIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "money",
-     ["SIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "SIT_ADDITIONAL_WITHHOLDING", "ADDITIONAL_SIT"],
-     ["SIT_ADDL_WITHHOLDING_PER_PAY_PERIOD", "SIT_ADDITIONAL_WITHHOLDING", "ADDITIONAL_SIT"]),
-]
-
-# ============================================================
-# 6) Normalization helpers
+# 5) Boolean + normalize helpers
 # ============================================================
 YES = {"YES", "Y", "TRUE", "T", "1"}
 NO  = {"NO", "N", "FALSE", "F", "0"}
@@ -199,10 +140,32 @@ NO  = {"NO", "N", "FALSE", "F", "0"}
 def normalize_colname(c: str) -> str:
     return re.sub(r"\s+", "_", str(c).strip().upper())
 
-def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [normalize_colname(c) for c in df.columns]
-    return df
+def make_unique_columns(cols: List[str]) -> List[str]:
+    out = []
+    seen = {}
+    for c in cols:
+        base = c
+        if base not in seen:
+            seen[base] = 1
+            out.append(base)
+        else:
+            seen[base] += 1
+            out.append(f"{base}__{seen[base]}")
+    return out
+
+def standardize_columns_keep_map(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """
+    Standardize columns to UPPER_WITH_UNDERSCORES and keep mapping:
+    standardized_name -> original_name
+    (If duplicates after standardizing, suffix __2, __3 etc.)
+    """
+    orig = list(df.columns)
+    std = [normalize_colname(c) for c in orig]
+    std_unique = make_unique_columns(std)
+    df2 = df.copy()
+    df2.columns = std_unique
+    std_to_orig = {s: o for s, o in zip(std_unique, orig)}
+    return df2, std_to_orig
 
 def detect_long_format(df: pd.DataFrame) -> bool:
     cols = set(df.columns)
@@ -230,48 +193,38 @@ def norm_text_for_compare(v: Any) -> str:
     if s == "":
         return ""
     s = s.lower()
-    # treat punctuation (including /) as insignificant
-    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s)  # punctuation incl "/" becomes space
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def to_bool_or_blank(v: Any) -> Any:
+def to_bool(v: Any) -> Optional[bool]:
     s = str(v).strip().upper() if v is not None else ""
     if s == "":
-        return ""
+        return None
     if s in YES:
         return True
     if s in NO:
         return False
-    return s  # unknown representation remains as-is
+    return None
 
-def to_int_allowances(v: Any) -> Any:
+def to_bool_blank_false(v: Any) -> bool:
     """
-    Allowances are numeric.
-    If TRUE/FALSE/Yes/No present, map TRUE->1, FALSE->0.
+    Blank treated as False; Yes/No/True/False/1/0 normalized.
     """
-    s = str(v).strip().upper() if v is not None else ""
-    if s == "":
-        return ""
-    if s in YES:
-        return 1
-    if s in NO:
-        return 0
-    try:
-        n = float(str(v).replace(",", ""))
-        return int(n) if n.is_integer() else n
-    except Exception:
-        return s
+    b = to_bool(v)
+    if b is None:
+        return False
+    return b
 
-def to_int_or_zero(v: Any) -> int:
+def to_int_allowances(v: Any) -> Optional[int]:
     """
-    For allowance summing: blank -> 0, True/False -> 1/0, numeric -> int
+    Numeric allowances.
+    True/False -> 1/0.
+    Blank -> None.
     """
-    if v is None:
-        return 0
-    s = str(v).strip()
+    s = str(v).strip() if v is not None else ""
     if s == "":
-        return 0
+        return None
     u = s.upper()
     if u in YES:
         return 1
@@ -281,120 +234,332 @@ def to_int_or_zero(v: Any) -> int:
         n = float(s.replace(",", ""))
         return int(n) if n.is_integer() else int(round(n))
     except Exception:
-        return 0
+        return None
 
-def to_money_str(v: Any, uzio_is_cents: bool) -> str:
-    s = str(v).strip() if v is not None else ""
-    if s == "":
-        return ""
-    # if boolean sneaks in, normalize to 1/0
-    if s.upper() in YES:
-        s = "1"
-    if s.upper() in NO:
-        s = "0"
-    try:
-        n = float(s.replace(",", ""))
-        if uzio_is_cents:
-            n = n / 100.0
-        return f"{n:.2f}"
-    except Exception:
-        return s
+def to_int_blank_zero(v: Any) -> int:
+    """
+    Blank -> 0; False -> 0; True -> 1.
+    """
+    n = to_int_allowances(v)
+    return 0 if n is None else n
+
+def to_money(adp_val: Any, uzio_val: Any, uzio_is_cents: bool) -> Tuple[Optional[float], Optional[float]]:
+    def parse_money(x: Any, cents: bool) -> Optional[float]:
+        s = str(x).strip() if x is not None else ""
+        if s == "":
+            return None
+        u = s.upper()
+        if u in YES:
+            s = "1"
+        if u in NO:
+            s = "0"
+        try:
+            n = float(s.replace(",", ""))
+            if cents:
+                n = n / 100.0
+            return n
+        except Exception:
+            return None
+    return parse_money(adp_val, False), parse_money(uzio_val, uzio_is_cents)
 
 def parse_uzio_enum_to_adp_label(enum_val: Any) -> str:
-    """
-    Convert UZIO enum like 'IL_SINGLE' or 'FEDERAL_HEAD_OF_HOUSEHOLD' to ADP label using mapping.
-    If no mapping found, fallback to readable transformation.
-    """
     raw = str(enum_val).strip() if enum_val is not None else ""
     if raw == "":
         return ""
-    u = raw.strip().upper()
+    u = raw.upper()
     if "_" not in u:
-        return raw  # already a label-ish value
+        return raw
     prefix, suffix = u.split("_", 1)
     if prefix in FILING_STATUS_MAP and suffix in FILING_STATUS_MAP[prefix]:
         return FILING_STATUS_MAP[prefix][suffix]
-    # fallback if the state prefix isn't in table
     return suffix.replace("_", " ").title()
 
-def resolve_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+def pick_first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     for c in candidates:
         if c in df.columns:
             return c
     return None
 
-def pick_first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    cols = set(df.columns)
-    for c in candidates:
-        if c in cols:
-            return c
-    return None
-
 def resolve_allowance_cols(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    total = resolve_column(df, SIT_TOTAL_ALLOWANCES_CANDS)
-    basic = resolve_column(df, SIT_BASIC_ALLOWANCE_CANDS)
-    addl  = resolve_column(df, SIT_ADDITIONAL_ALLOWANCES_CANDS)
-    return total, basic, addl
+    def first(cands):
+        for c in cands:
+            if c in df.columns:
+                return c
+        return None
+    return first(SIT_TOTAL_ALLOWANCES_CANDS), first(SIT_BASIC_ALLOWANCE_CANDS), first(SIT_ADDITIONAL_ALLOWANCES_CANDS)
 
-def compute_sit_total_allowances(row: pd.Series, total_col: Optional[str], basic_col: Optional[str], addl_col: Optional[str]) -> Any:
+def compute_sit_total_allowances(row: pd.Series, total_col: Optional[str], basic_col: Optional[str], addl_col: Optional[str]) -> Optional[int]:
     """
-    Preference:
-      1) Use SIT_TOTAL_ALLOWANCES if present AND non-blank
-      2) Else BASIC + ADDITIONAL (missing parts treated as 0)
-      3) If nothing exists at all, return blank
+    Prefer total if present and non-blank, else basic+additional.
+    Blank -> None.
     """
     if total_col and total_col in row.index:
-        raw_total = row.get(total_col, "")
-        if str(raw_total).strip() != "":
-            return to_int_allowances(raw_total)
+        v = to_int_allowances(row.get(total_col, ""))
+        if v is not None:
+            return v
+    has_parts = False
+    total = 0
+    if basic_col and basic_col in row.index:
+        has_parts = True
+        total += to_int_blank_zero(row.get(basic_col, ""))
+    if addl_col and addl_col in row.index:
+        has_parts = True
+        total += to_int_blank_zero(row.get(addl_col, ""))
+    if not has_parts:
+        return None
+    return total
 
-    has_basic = bool(basic_col and basic_col in row.index)
-    has_addl  = bool(addl_col and addl_col in row.index)
-
-    if not has_basic and not has_addl:
-        return ""
-
-    basic_val = to_int_or_zero(row.get(basic_col, "")) if has_basic else 0
-    addl_val  = to_int_or_zero(row.get(addl_col, "")) if has_addl else 0
-    return basic_val + addl_val
-
-def allowance_col_label(total_col: Optional[str], basic_col: Optional[str], addl_col: Optional[str]) -> str:
+def allowance_col_label(total_col: Optional[str], basic_col: Optional[str], addl_col: Optional[str], col_to_orig: Dict[str, str]) -> str:
     if total_col:
-        return total_col
+        return col_to_orig.get(total_col, total_col)
     parts = [c for c in [basic_col, addl_col] if c]
-    return " + ".join(parts) if parts else ""
+    if not parts:
+        return ""
+    return " + ".join([col_to_orig.get(c, c) for c in parts])
 
-def normalize_pair(field: str, ftype: str, adp_val: Any, uzio_val: Any, cents_fields: set) -> Tuple[Any, Any, str]:
+def is_active_status(v: Any) -> bool:
     """
-    Returns (adp_norm, uzio_norm, rule_used)
+    Robust active detection:
+    - 'Active', 'A', 'Active Employee', 'Active - ...'
+    - Not terminated/inactive
     """
-    if ftype == "filing_status":
-        adp_label = str(adp_val).strip() if adp_val is not None else ""
-        uzio_label = parse_uzio_enum_to_adp_label(uzio_val)
-        return (
-            norm_text_for_compare(adp_label),
-            norm_text_for_compare(uzio_label),
-            "filing_status: UZIO enum -> ADP label via mapping; punctuation/case/space normalized",
-        )
-    if ftype == "boolean":
-        return to_bool_or_blank(adp_val), to_bool_or_blank(uzio_val), "boolean: Yes/No/1/0/True/False normalized"
-    if ftype == "money":
-        uzio_is_cents = field in cents_fields
-        return (
-            to_money_str(adp_val, uzio_is_cents=False),
-            to_money_str(uzio_val, uzio_is_cents=uzio_is_cents),
-            "money: UZIO ÷100 (cents->dollars)" if uzio_is_cents else "money: numeric compare",
-        )
-    # default: text normalization
-    return norm_text_for_compare(adp_val), norm_text_for_compare(uzio_val), "text: whitespace/case/punctuation normalized"
-
-def is_active_status(val: str) -> bool:
-    s = norm_text_for_compare(val)
-    # avoids "inactive" being treated as active
-    return s == "active" or s.startswith("active ")
+    s = norm_text_for_compare(v)
+    if s in {"a", "act"}:
+        return True
+    if "active" in s and "inactive" not in s and "terminated" not in s and "term" not in s and "separated" not in s:
+        return True
+    return False
 
 # ============================================================
-# 7) File reading (Excel/CSV)
+# 6) “Image-2 style” field definitions (human-friendly)
+# Each row: display_field, type_key, uzio_field_name, notes,
+#           and ADP keyword matcher function for ADP columns
+# ============================================================
+class FieldDef:
+    def __init__(self, display: str, uzio_field: str, type_key: str, notes: str,
+                 adp_keywords_any: List[str], adp_keywords_all: List[str]):
+        self.display = display
+        self.uzio_field = uzio_field
+        self.type_key = type_key
+        self.notes = notes
+        self.adp_keywords_any = [normalize_colname(x) for x in adp_keywords_any]
+        self.adp_keywords_all = [normalize_colname(x) for x in adp_keywords_all]
+
+FIELD_DEFS: List[FieldDef] = [
+    FieldDef(
+        display="FIT Filing Status",
+        uzio_field="FIT_FILING_STATUS",
+        type_key="filing_status",
+        notes="UZIO enum mapped to ADP label (your mapping table); punctuation/case/space normalized.",
+        adp_keywords_any=["MARITAL", "FILING", "STATUS"],
+        adp_keywords_all=["FEDERAL", "MARITAL", "STATUS", "DESCRIPTION"],
+    ),
+    FieldDef(
+        display="FIT Multiple Jobs indicator",
+        uzio_field="FIT_HIGHER_WITHHOLDING",
+        type_key="boolean",
+        notes="ADP Yes/No vs UZIO True/False/1/0 normalized.",
+        adp_keywords_any=["MULTIPLE", "JOBS"],
+        adp_keywords_all=["MULTIPLE", "JOBS", "INDICATOR"],
+    ),
+    FieldDef(
+        display="FIT Dependents amount",
+        uzio_field="FIT_CHILD_AND_DEPENDENT_TAX_CREDIT",
+        type_key="money_cents",
+        notes="UZIO stored in cents; compare ADP dollars vs UZIO cents (÷100). Blank/0 treated as equal.",
+        adp_keywords_any=["DEPENDENTS"],
+        adp_keywords_all=["DEPENDENTS"],
+    ),
+    FieldDef(
+        display="FIT Deductions amount",
+        uzio_field="FIT_DEDUCTIONS_OVER_STANDARD",
+        type_key="money_cents",
+        notes="UZIO stored in cents; compare ADP dollars vs UZIO cents (÷100). Blank/0 treated as equal.",
+        adp_keywords_any=["DEDUCTIONS"],
+        adp_keywords_all=["DEDUCTIONS"],
+    ),
+    FieldDef(
+        display="FIT Other income",
+        uzio_field="FIT_OTHER_INCOME",
+        type_key="money_cents",
+        notes="UZIO stored in cents; compare ADP dollars vs UZIO cents (÷100). Blank/0 treated as equal.",
+        adp_keywords_any=["OTHER", "INCOME"],
+        adp_keywords_all=["OTHER", "INCOME"],
+    ),
+    FieldDef(
+        display="FIT Additional withholding (per pay period)",
+        uzio_field="FIT_ADDL_WITHHOLDING_PER_PAY_PERIOD",
+        type_key="money_cents",
+        notes="UZIO stored in cents; compare ADP dollars vs UZIO cents (÷100). Blank/0 treated as equal.",
+        adp_keywords_any=["ADDITIONAL", "TAX", "AMOUNT"],
+        adp_keywords_all=["FEDERAL", "ADDITIONAL", "TAX", "AMOUNT"],
+    ),
+    FieldDef(
+        display="FIT Withholding exemption (Do not calculate FIT)",
+        uzio_field="FIT_WITHHOLDING_EXEMPTION",
+        type_key="boolean_blank_false",
+        notes="ADP blank treated as No/False. ADP Yes/No vs UZIO True/False/1/0 normalized.",
+        adp_keywords_any=["DO_NOT_CALCULATE", "FEDERAL", "INCOME", "TAX"],
+        adp_keywords_all=["DO", "NOT", "CALCULATE", "FEDERAL", "INCOME", "TAX"],
+    ),
+    FieldDef(
+        display="FIT W-4 exemptions/allowances",
+        uzio_field="FIT_WITHHOLDING_ALLOWANCE",
+        type_key="int_blank_zero",
+        notes="Numeric; UZIO False/blank treated as 0.",
+        adp_keywords_any=["W4", "EXEMPTIONS", "ALLOWANCES"],
+        adp_keywords_all=["FEDERAL", "W4", "EXEMPTIONS"],
+    ),
+    FieldDef(
+        display="SIT Withholding exemption (Do not calculate SIT)",
+        uzio_field="SIT_WITHHOLDING_EXEMPTION",
+        type_key="boolean_blank_false",
+        notes="ADP blank treated as No/False. ADP Yes/No vs UZIO True/False/1/0 normalized.",
+        adp_keywords_any=["DO_NOT_CALCULATE", "STATE", "TAX"],
+        adp_keywords_all=["DO", "NOT", "CALCULATE", "STATE", "TAX"],
+    ),
+    FieldDef(
+        display="SIT Total allowances",
+        uzio_field="SIT_TOTAL_ALLOWANCES_CALC",
+        type_key="allowances_calc",
+        notes="Computed: prefer SIT_TOTAL_ALLOWANCES else SIT_BASIC_ALLOWANCE + SIT_ADDITIONAL_ALLOWANCES. Numeric; booleans treated as 0/1.",
+        adp_keywords_any=["STATE", "EXEMPTIONS", "ALLOWANCES"],
+        adp_keywords_all=["STATE", "EXEMPTIONS", "ALLOWANCES"],
+    ),
+    FieldDef(
+        display="SIT Additional withholding (per pay period)",
+        uzio_field="SIT_ADDL_WITHHOLDING_PER_PAY_PERIOD",
+        type_key="money_cents",
+        notes="UZIO stored in cents; compare ADP dollars vs UZIO cents (÷100). Blank/0 treated as equal.",
+        adp_keywords_any=["STATE", "ADDITIONAL", "TAX", "AMOUNT"],
+        adp_keywords_all=["STATE", "ADDITIONAL", "TAX", "AMOUNT"],
+    ),
+]
+
+# ============================================================
+# 7) Column resolver: find ADP column by keyword scoring
+# ============================================================
+def find_best_col_by_keywords(df_cols: List[str], keywords_any: List[str], keywords_all: List[str]) -> Optional[str]:
+    """
+    df_cols are standardized column names.
+    We score columns by:
+      +2 for each keyword in ALL list found as substring
+      +1 for each keyword in ANY list found as substring
+    Must match at least 1 ANY keyword, and ideally all ALL keywords.
+    """
+    best = None
+    best_score = 0
+
+    for col in df_cols:
+        score = 0
+        col_u = col
+
+        any_hits = sum(1 for k in keywords_any if k and k in col_u)
+        all_hits = sum(1 for k in keywords_all if k and k in col_u)
+
+        if any_hits == 0 and len(keywords_any) > 0:
+            continue
+
+        score += any_hits * 1
+        score += all_hits * 2
+
+        # bias toward exact-ish columns
+        if all_hits == len(keywords_all) and len(keywords_all) > 0:
+            score += 3
+
+        if score > best_score:
+            best_score = score
+            best = col
+
+    return best
+
+def resolve_uzio_col(df: pd.DataFrame, uzio_field: str) -> Optional[str]:
+    """
+    Prefer exact column match; else try common alternates.
+    """
+    if uzio_field in df.columns:
+        return uzio_field
+    # some exports use slightly different naming
+    alts = [
+        uzio_field.replace("_PER_PAY_PERIOD", ""),
+        uzio_field.replace("ADDl", "ADDL"),
+        uzio_field.replace("WITHHOLDING", "WITHHOLD"),
+    ]
+    for a in alts:
+        if a in df.columns:
+            return a
+    return None
+
+# ============================================================
+# 8) Compare normalization per type
+# ============================================================
+def values_equal(type_key: str, adp_raw: Any, uzio_raw: Any, cents_fields: set,
+                 allowances_tuple: Tuple[Optional[int], Optional[int]] = (None, None)) -> Tuple[bool, Any, Any]:
+    """
+    Return (is_equal, adp_norm, uzio_norm) based on type_key
+    """
+    if type_key == "filing_status":
+        adp_norm = norm_text_for_compare(adp_raw)
+        uzio_label = parse_uzio_enum_to_adp_label(uzio_raw)
+        uzio_norm = norm_text_for_compare(uzio_label)
+        return adp_norm == uzio_norm, adp_norm, uzio_norm
+
+    if type_key == "boolean":
+        adp_norm = to_bool(adp_raw)
+        uzio_norm = to_bool(uzio_raw)
+        # treat None==None as equal
+        return adp_norm == uzio_norm, adp_norm, uzio_norm
+
+    if type_key == "boolean_blank_false":
+        adp_norm = to_bool_blank_false(adp_raw)
+        uzio_norm = to_bool_blank_false(uzio_raw)
+        return adp_norm == uzio_norm, adp_norm, uzio_norm
+
+    if type_key == "int_blank_zero":
+        adp_norm = to_int_blank_zero(adp_raw)
+        uzio_norm = to_int_blank_zero(uzio_raw)
+        return adp_norm == uzio_norm, adp_norm, uzio_norm
+
+    if type_key == "money_cents":
+        # For these fields we assume UZIO cents. ADP dollars.
+        adp_n, uzio_n = to_money(adp_raw, uzio_raw, uzio_is_cents=True)
+        # blank and 0 treated equal
+        a = 0.0 if adp_n is None else float(adp_n)
+        u = 0.0 if uzio_n is None else float(uzio_n)
+        return abs(a - u) < 0.0001, round(a, 2), round(u, 2)
+
+    if type_key == "allowances_calc":
+        adp_norm, uzio_norm = allowances_tuple
+        a = 0 if adp_norm is None else int(adp_norm)
+        u = 0 if uzio_norm is None else int(uzio_norm)
+        return a == u, a, u
+
+    # fallback text
+    adp_norm = norm_text_for_compare(adp_raw)
+    uzio_norm = norm_text_for_compare(uzio_raw)
+    return adp_norm == uzio_norm, adp_norm, uzio_norm
+
+# ============================================================
+# 9) Excel output (openpyxl engine)
+# ============================================================
+def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for name, df in sheets.items():
+            sheet_name = name[:31]
+            df = df.copy()
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            ws = writer.book[sheet_name]
+            ws.freeze_panes = "A2"
+            # widths (scan first 2000 rows max)
+            for i, col in enumerate(df.columns, start=1):
+                sample = df[col].astype(str).head(2000).tolist()
+                max_len = max([len(str(col))] + [len(x) for x in sample if x is not None])
+                ws.column_dimensions[get_column_letter(i)].width = min(60, max(12, max_len + 2))
+    return output.getvalue()
+
+# ============================================================
+# 10) Read file
 # ============================================================
 def read_uploaded_file(uploaded) -> pd.DataFrame:
     name = uploaded.name.lower()
@@ -407,151 +572,158 @@ def read_uploaded_file(uploaded) -> pd.DataFrame:
     raise ValueError("Unsupported file type. Upload .xlsx/.xls or .csv")
 
 # ============================================================
-# 8) Comparison engine
+# 11) Main compare
 # ============================================================
-def compare_data(df_adp: pd.DataFrame, df_uzio: pd.DataFrame, adp_key: str, uzio_key: str, cents_fields: set, compare_all_common: bool) -> Dict[str, pd.DataFrame]:
-    df_adp = df_adp.copy()
-    df_uzio = df_uzio.copy()
+def compare(adp_df: pd.DataFrame, uzio_df: pd.DataFrame,
+            adp_std_to_orig: Dict[str, str], uzio_std_to_orig: Dict[str, str],
+            adp_key: str, uzio_key: str, cents_fields: set) -> Dict[str, pd.DataFrame]:
 
-    df_adp[adp_key] = df_adp[adp_key].astype(str).str.strip()
-    df_uzio[uzio_key] = df_uzio[uzio_key].astype(str).str.strip()
+    adp = adp_df.copy()
+    uzio = uzio_df.copy()
 
-    adp_idx = df_adp.set_index(adp_key, drop=False)
-    uzio_idx = df_uzio.set_index(uzio_key, drop=False)
+    # normalize keys
+    adp[adp_key] = adp[adp_key].astype(str).str.strip()
+    uzio[uzio_key] = uzio[uzio_key].astype(str).str.strip()
 
-    keys_adp = set(adp_idx.index) - {""}
-    keys_uzio = set(uzio_idx.index) - {""}
-    common_keys = sorted(keys_adp & keys_uzio)
+    adp_idx = adp.set_index(adp_key, drop=False)
+    uzio_idx = uzio.set_index(uzio_key, drop=False)
 
-    missing_in_uzio = sorted(keys_adp - keys_uzio)
-    missing_in_adp = sorted(keys_uzio - keys_adp)
+    adp_keys = set(adp_idx.index) - {""}
+    uzio_keys = set(uzio_idx.index) - {""}
+    common = sorted(adp_keys & uzio_keys)
+    missing_in_uzio = sorted(adp_keys - uzio_keys)
+    missing_in_adp = sorted(uzio_keys - adp_keys)
 
-    # Optional descriptive columns
-    adp_status_col = pick_first_existing(df_adp, STATUS_CANDIDATES)
-    uzio_status_col = pick_first_existing(df_uzio, STATUS_CANDIDATES)
+    # status/name columns (for reporting)
+    adp_status = pick_first_existing(adp, STATUS_CANDIDATES)
+    uzio_status = pick_first_existing(uzio, STATUS_CANDIDATES)
+    adp_fn = pick_first_existing(adp, NAME_FIRST_CANDIDATES)
+    adp_ln = pick_first_existing(adp, NAME_LAST_CANDIDATES)
+    uzio_fn = pick_first_existing(uzio, NAME_FIRST_CANDIDATES)
+    uzio_ln = pick_first_existing(uzio, NAME_LAST_CANDIDATES)
 
-    adp_fn = pick_first_existing(df_adp, NAME_FIRST_CANDIDATES)
-    adp_ln = pick_first_existing(df_adp, NAME_LAST_CANDIDATES)
-    uzio_fn = pick_first_existing(df_uzio, NAME_FIRST_CANDIDATES)
-    uzio_ln = pick_first_existing(df_uzio, NAME_LAST_CANDIDATES)
+    # allowances cols
+    adp_total, adp_basic, adp_addl = resolve_allowance_cols(adp)
+    uzio_total, uzio_basic, uzio_addl = resolve_allowance_cols(uzio)
 
-    # Resolve allowances columns (special computed compare)
-    adp_total_col, adp_basic_col, adp_addl_col = resolve_allowance_cols(df_adp)
-    uzio_total_col, uzio_basic_col, uzio_addl_col = resolve_allowance_cols(df_uzio)
-    allowances_in_scope = any([adp_total_col, adp_basic_col, adp_addl_col, uzio_total_col, uzio_basic_col, uzio_addl_col])
+    # Build mapping rules table like Image-2
+    mapping_rows = []
+    resolved_pairs = []  # (FieldDef, adp_col, uzio_col)
 
-    # Resolve known fields
-    resolved_fields = []
-    for field, ftype, adp_cands, uzio_cands in FIELD_SPECS:
-        adp_col = resolve_column(df_adp, adp_cands)
-        uzio_col = resolve_column(df_uzio, uzio_cands)
-        if adp_col and uzio_col:
-            resolved_fields.append((field, ftype, adp_col, uzio_col))
+    adp_cols = list(adp.columns)
 
-    # Add relevant common columns (FIT_/SIT_ etc.) to reduce noise
-    used_adp_cols = {a for _, _, a, _ in resolved_fields}
-    used_uzio_cols = {u for _, _, _, u in resolved_fields}
+    for f in FIELD_DEFS:
+        # ADP column resolve
+        adp_col = find_best_col_by_keywords(adp_cols, f.adp_keywords_any, f.adp_keywords_all)
 
-    common_cols = sorted((set(df_adp.columns) & set(df_uzio.columns)) - {adp_key, uzio_key})
-    if compare_all_common:
-        extra_cols = common_cols
-    else:
-        extra_cols = [
-            c for c in common_cols
-            if c.startswith("FIT_") or c.startswith("SIT_") or c.startswith("FEDERAL_") or c.endswith("_FILING_STATUS")
-        ]
+        # UZIO column resolve
+        uzio_col = None
+        if f.type_key == "allowances_calc":
+            uzio_col = "SIT_TOTAL_ALLOWANCES_CALC"
+        else:
+            uzio_col = resolve_uzio_col(uzio, f.uzio_field)
 
-    for col in extra_cols:
-        if col in used_adp_cols or col in used_uzio_cols:
-            continue
-        # avoid double comparing allowances if the total column exists as a raw column
-        if col in SIT_TOTAL_ALLOWANCES_CANDS or col in SIT_BASIC_ALLOWANCE_CANDS or col in SIT_ADDITIONAL_ALLOWANCES_CANDS:
-            continue
-        resolved_fields.append((col, "text", col, col))
+        mapping_rows.append({
+            "Field": f.display,
+            "ADP Column": adp_std_to_orig.get(adp_col, "") if adp_col else "",
+            "UZIO Field": uzio_col if uzio_col else f.uzio_field,
+            "Type": f.type_key,
+            "Notes": f.notes,
+        })
 
+        if f.type_key == "allowances_calc":
+            # allow ADP column missing? still compare if ADP has any allowance column
+            resolved_pairs.append((f, adp_col, uzio_col))
+        else:
+            if adp_col and uzio_col:
+                resolved_pairs.append((f, adp_col, uzio_col))
+
+    # mismatches
     mismatches = []
-
-    for k in common_keys:
+    for k in common:
         adp_row = adp_idx.loc[k]
         uzio_row = uzio_idx.loc[k]
 
-        # status
         status = ""
-        if uzio_status_col:
-            status = str(uzio_row.get(uzio_status_col, "")).strip()
-        elif adp_status_col:
-            status = str(adp_row.get(adp_status_col, "")).strip()
+        if uzio_status:
+            status = str(uzio_row.get(uzio_status, "")).strip()
+        elif adp_status:
+            status = str(adp_row.get(adp_status, "")).strip()
 
-        # name
         full_name = ""
         if uzio_fn and uzio_ln:
             full_name = f"{str(uzio_row.get(uzio_fn,'')).strip()} {str(uzio_row.get(uzio_ln,'')).strip()}".strip()
         elif adp_fn and adp_ln:
             full_name = f"{str(adp_row.get(adp_fn,'')).strip()} {str(adp_row.get(adp_ln,'')).strip()}".strip()
 
-        # ----- Special compare: SIT allowances (total OR basic+additional) -----
-        if allowances_in_scope:
-            adp_allow = compute_sit_total_allowances(adp_row, adp_total_col, adp_basic_col, adp_addl_col)
-            uzio_allow = compute_sit_total_allowances(uzio_row, uzio_total_col, uzio_basic_col, uzio_addl_col)
+        # precompute allowances
+        adp_allow = compute_sit_total_allowances(adp_row, adp_total, adp_basic, adp_addl)
+        uzio_allow = compute_sit_total_allowances(uzio_row, uzio_total, uzio_basic, uzio_addl)
 
-            adp_norm = to_int_allowances(adp_allow) if str(adp_allow).strip() != "" else ""
-            uzio_norm = to_int_allowances(uzio_allow) if str(uzio_allow).strip() != "" else ""
-            rule = "numeric: SIT allowances; uses SIT_TOTAL_ALLOWANCES else BASIC+ADDITIONAL; True/False->1/0 only for allowances"
+        for f, adp_col, uzio_col in resolved_pairs:
+            if f.type_key == "allowances_calc":
+                # ADP column shown in mapping tab, but value comes from that column (if found), otherwise fallback to basic logic if exists
+                adp_raw = adp_row.get(adp_col, "") if adp_col else ""
+                # If ADP total allowances column exists, prefer it; else the computed adp_allow
+                adp_val = to_int_allowances(adp_raw)
+                if adp_val is None:
+                    adp_val = adp_allow
+                uzio_val = uzio_allow
 
-            if not (adp_norm == "" and uzio_norm == "") and adp_norm != uzio_norm:
-                mismatches.append({
-                    "EMPLOYEE_KEY": k,
-                    "EMPLOYEE_NAME": full_name,
-                    "EMPLOYMENT_STATUS": status,
-                    "FIELD": SIT_TOTAL_ALLOWANCES_FIELD,
-                    "ADP_COLUMN": allowance_col_label(adp_total_col, adp_basic_col, adp_addl_col),
-                    "UZIO_COLUMN": allowance_col_label(uzio_total_col, uzio_basic_col, uzio_addl_col),
-                    "ADP_RAW": str(adp_allow),
-                    "UZIO_RAW": str(uzio_allow),
-                    "ADP_NORMALIZED": adp_norm,
-                    "UZIO_NORMALIZED": uzio_norm,
-                    "RULE_APPLIED": rule,
-                })
-
-        # ----- All other resolved fields -----
-        for field, ftype, adp_col, uzio_col in resolved_fields:
-            adp_val = adp_row.get(adp_col, "")
-            uzio_val = uzio_row.get(uzio_col, "")
-
-            adp_norm, uzio_norm, rule = normalize_pair(field, ftype, adp_val, uzio_val, cents_fields)
-
-            # treat both empty as match
-            if (adp_norm == "" or pd.isna(adp_norm)) and (uzio_norm == "" or pd.isna(uzio_norm)):
+                equal, adp_norm, uzio_norm = values_equal("allowances_calc", adp_val, uzio_val, cents_fields, (adp_val, uzio_val))
+                if not equal:
+                    mismatches.append({
+                        "EMPLOYEE_KEY": k,
+                        "EMPLOYEE_NAME": full_name,
+                        "EMPLOYMENT_STATUS": status,
+                        "FIELD": "SIT_TOTAL_ALLOWANCES",
+                        "ADP_COLUMN": adp_std_to_orig.get(adp_col, "") if adp_col else allowance_col_label(adp_total, adp_basic, adp_addl, adp_std_to_orig),
+                        "UZIO_COLUMN": allowance_col_label(uzio_total, uzio_basic, uzio_addl, uzio_std_to_orig),
+                        "ADP_RAW": str(adp_val if adp_val is not None else ""),
+                        "UZIO_RAW": str(uzio_val if uzio_val is not None else ""),
+                        "ADP_NORMALIZED": adp_norm,
+                        "UZIO_NORMALIZED": uzio_norm,
+                        "RULE_APPLIED": f.notes,
+                    })
                 continue
 
-            if adp_norm != uzio_norm:
+            adp_raw = adp_row.get(adp_col, "")
+            uzio_raw = uzio_row.get(uzio_col, "")
+
+            equal, adp_norm, uzio_norm = values_equal(f.type_key, adp_raw, uzio_raw, cents_fields)
+
+            # treat both blank-ish equal for text/filing_status; for others already handled as blank->0 or blank->false
+            if f.type_key in {"filing_status"}:
+                if adp_norm == "" and uzio_norm == "":
+                    continue
+
+            if not equal:
                 mismatches.append({
                     "EMPLOYEE_KEY": k,
                     "EMPLOYEE_NAME": full_name,
                     "EMPLOYMENT_STATUS": status,
-                    "FIELD": field,
-                    "ADP_COLUMN": adp_col,
+                    "FIELD": f.uzio_field,
+                    "ADP_COLUMN": adp_std_to_orig.get(adp_col, adp_col),
                     "UZIO_COLUMN": uzio_col,
-                    "ADP_RAW": str(adp_val),
-                    "UZIO_RAW": str(uzio_val),
+                    "ADP_RAW": str(adp_raw),
+                    "UZIO_RAW": str(uzio_raw),
                     "ADP_NORMALIZED": adp_norm,
                     "UZIO_NORMALIZED": uzio_norm,
-                    "RULE_APPLIED": rule,
+                    "RULE_APPLIED": f.notes,
                 })
 
     mism_df = pd.DataFrame(mismatches)
 
-    # split active / terminated-ish
     if mism_df.empty:
         active_df = mism_df.copy()
         term_df = mism_df.copy()
     else:
-        active_mask = mism_df["EMPLOYMENT_STATUS"].astype(str).map(is_active_status)
+        active_mask = mism_df["EMPLOYMENT_STATUS"].map(is_active_status)
         active_df = mism_df[active_mask].copy()
         term_df = mism_df[~active_mask].copy()
 
     summary = pd.DataFrame([
-        {"Metric": "Employees compared (matched keys)", "Value": len(common_keys)},
+        {"Metric": "Employees compared (matched keys)", "Value": len(common)},
         {"Metric": "ADP keys missing in UZIO", "Value": len(missing_in_uzio)},
         {"Metric": "UZIO keys missing in ADP", "Value": len(missing_in_adp)},
         {"Metric": "Total mismatches", "Value": int(len(mism_df))},
@@ -567,38 +739,19 @@ def compare_data(df_adp: pd.DataFrame, df_uzio: pd.DataFrame, adp_key: str, uzio
         if not mism_df.empty else pd.DataFrame(columns=["FIELD", "MISMATCH_COUNT", "EMPLOYEE_COUNT"])
     )
 
-    field_rules = pd.DataFrame([
-        {
-            "FIELD": field,
-            "TYPE": ftype,
-            "ADP_COLUMN": adp_col,
-            "UZIO_COLUMN": uzio_col,
-            "UZIO_CENTS_DIV100": (field in cents_fields) if ftype == "money" else "",
-            "NOTES": ""
-        }
-        for field, ftype, adp_col, uzio_col in resolved_fields
-    ])
+    field_mapping_rules = pd.DataFrame(mapping_rows)
 
-    # Add a special row for allowances rule
-    if allowances_in_scope:
-        field_rules = pd.concat([
-            field_rules,
-            pd.DataFrame([{
-                "FIELD": SIT_TOTAL_ALLOWANCES_FIELD,
-                "TYPE": "allowances_int (direct or derived)",
-                "ADP_COLUMN": allowance_col_label(adp_total_col, adp_basic_col, adp_addl_col),
-                "UZIO_COLUMN": allowance_col_label(uzio_total_col, uzio_basic_col, uzio_addl_col),
-                "UZIO_CENTS_DIV100": "",
-                "NOTES": "If SIT_TOTAL_ALLOWANCES missing, compare BASIC+ADDITIONAL. Numeric field; True/False->1/0 only here."
-            }])
-        ], ignore_index=True)
+    # Unverified UZIO fields (not used by our mapping)
+    used_uzio = set()
+    for f, _, uzio_col in resolved_pairs:
+        if uzio_col:
+            used_uzio.add(uzio_col)
+    # also include allowance-related cols
+    used_uzio |= {c for c in [uzio_total, uzio_basic, uzio_addl] if c}
+    used_uzio |= {uzio_key}
 
-    mapped_uzio_cols = {u for _, _, _, u in resolved_fields} | {uzio_key}
-    # also consider allowance cols as "handled"
-    mapped_uzio_cols |= set([c for c in [uzio_total_col, uzio_basic_col, uzio_addl_col] if c])
-
-    unverified_uzio = sorted(set(df_uzio.columns) - mapped_uzio_cols)
-    unverified_uzio_df = pd.DataFrame({"UZIO_FIELD": unverified_uzio})
+    unverified = sorted(set(uzio.columns) - used_uzio)
+    unverified_df = pd.DataFrame({"UZIO_FIELD": [uzio_std_to_orig.get(c, c) for c in unverified]})
 
     missing_in_uzio_df = pd.DataFrame({"ADP_KEY_MISSING_IN_UZIO": missing_in_uzio})
     missing_in_adp_df = pd.DataFrame({"UZIO_KEY_MISSING_IN_ADP": missing_in_adp})
@@ -609,48 +762,25 @@ def compare_data(df_adp: pd.DataFrame, df_uzio: pd.DataFrame, adp_key: str, uzio
         "Mismatches (All)": mism_df,
         "Mismatches (Active)": active_df,
         "Mismatches (Terminated)": term_df,
-        "Field Mapping Rules": field_rules,
-        "Unverified UZIO Fields": unverified_uzio_df,
+        "Field Mapping Rules": field_mapping_rules,
+        "Unverified UZIO Fields": unverified_df,
         "Missing in UZIO": missing_in_uzio_df,
         "Missing in ADP": missing_in_adp_df,
     }
 
-def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        for name, df in sheets.items():
-            df = df.copy()
-            df.to_excel(writer, sheet_name=name[:31], index=False)
-            ws = writer.sheets[name[:31]]
-            ws.freeze_panes(1, 0)
-            # column widths
-            for i, col in enumerate(df.columns):
-                try:
-                    max_len = int(df[col].astype(str).map(len).max()) if len(df) else len(col)
-                except Exception:
-                    max_len = len(col)
-                width = max(12, min(55, max(max_len, len(col)) + 2))
-                ws.set_column(i, i, width)
-    return output.getvalue()
-
 # ============================================================
-# 9) Streamlit UI
+# 12) Streamlit UI
 # ============================================================
 st.set_page_config(page_title="ADP ↔ UZIO FIT/SIT Validator", layout="wide")
 st.title("ADP ↔ UZIO FIT/SIT Cross-Verification Utility")
 
 st.markdown(
     """
-Uploads: **ADP** + **UZIO** (Excel/CSV)
-
-Rules applied:
-- Filing status: UZIO enum → ADP label via your mapping table (then punctuation/case/space normalized compare)
-- Yes/No ↔ True/False ↔ 1/0 normalization for boolean fields
-- Money compare: UZIO ÷100 for configured cents fields
-- **SIT allowances are numeric**:
-  - Prefer `SIT_TOTAL_ALLOWANCES`
-  - If missing, compare `SIT_BASIC_ALLOWANCE + SIT_ADDITIONAL_ALLOWANCES`
-  - If True/False appears, treat as 1/0 **only for allowances**
+This utility generates the same style report you expected (like your earlier “Image 2” output):
+- Strong ADP column detection (works with headers like “Federal/W4 Marital Status Description”)
+- Robust Active/Terminated split (supports A/T, Active Employee, etc.)
+- SIT allowances: uses total OR (basic + additional)
+- UZIO cents to dollars conversion for configured money fields
 """
 )
 
@@ -663,11 +793,12 @@ with c2:
 if not adp_file or not uzio_file:
     st.stop()
 
-adp_df = read_uploaded_file(adp_file)
-uzio_df = read_uploaded_file(uzio_file)
+raw_adp = read_uploaded_file(adp_file)
+raw_uzio = read_uploaded_file(uzio_file)
 
-adp_df = standardize_columns(adp_df)
-uzio_df = standardize_columns(uzio_df)
+# standardize but keep original header mappings
+adp_df, adp_std_to_orig = standardize_columns_keep_map(raw_adp)
+uzio_df, uzio_std_to_orig = standardize_columns_keep_map(raw_uzio)
 
 st.subheader("Format handling (auto)")
 if detect_long_format(adp_df):
@@ -678,6 +809,7 @@ if detect_long_format(adp_df):
         st.error("Select at least one pivot ID column for ADP long→wide conversion.")
         st.stop()
     adp_df = pivot_long_to_wide(adp_df, id_cols)
+    adp_std_to_orig = {c: c for c in adp_df.columns}  # pivot produces synthetic columns
 
 if detect_long_format(uzio_df):
     st.info("UZIO looks like LONG format (WITHHOLDING_FIELD_KEY/VALUE). It will be pivoted to WIDE.")
@@ -687,6 +819,7 @@ if detect_long_format(uzio_df):
         st.error("Select at least one pivot ID column for UZIO long→wide conversion.")
         st.stop()
     uzio_df = pivot_long_to_wide(uzio_df, id_cols)
+    uzio_std_to_orig = {c: c for c in uzio_df.columns}
 
 st.subheader("Key selection (how employees are matched)")
 adp_key_guess = pick_first_existing(adp_df, KEY_CANDIDATES) or adp_df.columns[0]
@@ -698,16 +831,14 @@ with k1:
 with k2:
     uzio_key = st.selectbox("UZIO key column", options=list(uzio_df.columns), index=list(uzio_df.columns).index(uzio_key_guess))
 
-st.subheader("Money fields stored in cents in UZIO (will be divided by 100)")
+st.subheader("Money fields stored in cents in UZIO (÷100)")
 cents_text = st.text_area("One per line:", value="\n".join(sorted(DEFAULT_CENTS_FIELDS)), height=130)
 cents_fields = {normalize_colname(x) for x in cents_text.splitlines() if x.strip()}
-
-compare_all_common = st.checkbox("Compare ALL common columns (can create noisy mismatches)", value=False)
 
 run = st.button("Generate mismatch report", type="primary")
 
 if run:
-    sheets = compare_data(adp_df, uzio_df, adp_key, uzio_key, cents_fields, compare_all_common)
+    sheets = compare(adp_df, uzio_df, adp_std_to_orig, uzio_std_to_orig, adp_key, uzio_key, cents_fields)
     excel_bytes = to_excel_bytes(sheets)
 
     st.success("Mismatch report generated.")
@@ -718,8 +849,11 @@ if run:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
+    st.subheader("Preview: Field Mapping Rules")
+    st.dataframe(sheets["Field Mapping Rules"], use_container_width=True)
+
     st.subheader("Preview: Mismatch Summary")
     st.dataframe(sheets["Mismatch Summary"], use_container_width=True)
 
-    st.subheader("Preview: Mismatches (All) — first 200 rows")
-    st.dataframe(sheets["Mismatches (All)"].head(200), use_container_width=True)
+    st.subheader("Preview: Mismatches (Active)")
+    st.dataframe(sheets["Mismatches (Active)"].head(200), use_container_width=True)
