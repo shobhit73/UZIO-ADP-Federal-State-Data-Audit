@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_TITLE = "ADP vs UZIO FIT/SIT Mismatch Audit Tool (Simple)"
+APP_TITLE = "ADP vs UZIO FIT/SIT Audit Tool"
 
 # -----------------------------
 # UI
