@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-APP_TITLE = "ADP vs UZIO FIT/SIT Audit Tool"
+APP_TITLE = "ADP vs UZIO FIT/SIT Mismatch Audit Tool (Simple)"
 
 # -----------------------------
 # UI
@@ -25,7 +25,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.title(APP_TITLE)
-st.write("Upload the **ADP** Excel export and the **UZIO** Fed/State withholding Excel export. Output has 3 tabs: Summary, Field Summary, Comparison Detail.")
+st.write(
+    "Upload the **ADP** Excel export and the **UZIO** Fed/State withholding Excel export. "
+    "Output has 3 tabs: Summary, Field Summary, Comparison Detail."
+)
 
 # -----------------------------
 # Helpers
@@ -92,7 +95,6 @@ def norm_bool_blank_false(x) -> str:
         return "false"
     if s in {"1", "true", "t", "yes", "y", "on"}:
         return "true"
-    # Handle booleans directly
     if isinstance(x, bool):
         return "true" if x else "false"
     return s  # fallback
@@ -139,7 +141,7 @@ def norm_money_uzio_cents_to_dollars(x) -> str:
 def parse_filing_status_map_from_text(text: str) -> dict:
     """
     Parses lines like:
-      FEDERAL_SINGLE("Single"), FEDERAL_MARRIED("Married"), ...
+      FEDERAL_SINGLE("Single"), FEDERAL_MARRIED_JOINTLY("Married filing jointly ...")
     into { "FEDERAL_SINGLE": "Single", ... }
     """
     out = {}
@@ -148,10 +150,7 @@ def parse_filing_status_map_from_text(text: str) -> dict:
     return out
 
 def load_default_mapping() -> pd.DataFrame:
-    """
-    Minimal mapping (same spirit as your simple census utility).
-    You can replace/extend this easily.
-    """
+    """Minimal mapping (same spirit as your simple census utility)."""
     rows = [
         ("employee_id", "Associate ID"),
         ("employee_first_name", "Legal First Name"),
@@ -178,8 +177,8 @@ def resolve_mapping_sheet() -> pd.DataFrame:
     """
     If a local mapping file exists next to the app, use it.
     Else use default mapping above.
-    Local file name expected (same as what you shared earlier):
-      Mapping Sheet Data of UZIO and ADP.xlsx  (Sheet1, columns: Uzio Columns, ADP Columns)
+    Expected local file:
+      Mapping Sheet Data of UZIO and ADP.xlsx
     """
     try:
         mp = pd.ExcelFile("Mapping Sheet Data of UZIO and ADP.xlsx")
@@ -200,8 +199,8 @@ def resolve_mapping_sheet() -> pd.DataFrame:
 
 def resolve_filing_status_map() -> dict:
     """
-    If a local filing status file exists, use it.
-    Else use a small fallback map.
+    Loads from local: filing status_code.txt
+    Falls back to a minimal map if not found.
     """
     try:
         with open("filing status_code.txt", "r", encoding="utf-8") as f:
@@ -216,7 +215,7 @@ def resolve_filing_status_map() -> dict:
     return {
         "FEDERAL_SINGLE": "Single",
         "FEDERAL_MARRIED": "Married",
-        "FEDERAL_MARRIED_JOINTLY": "Married filing jointly",
+        "FEDERAL_MARRIED_JOINTLY": "Married filing jointly or Qualifying surviving spouse",
         "FEDERAL_HEAD_OF_HOUSEHOLD": "Head of household",
         "FEDERAL_SINGLE_OR_MARRIED": "Single or Married filing separately",
     }
@@ -241,8 +240,59 @@ MONEY_FIELDS = {
     "SIT_ADDL_WITHHOLDING_PER_PAY_PERIOD",
 }
 INT_FIELDS = {"FIT_WITHHOLDING_ALLOWANCE", "SIT_TOTAL_ALLOWANCES"}
-BOOL_FIELDS = {"FIT_WITHHOLDING_EXEMPTION", "FIT_WITHHOLD_AS_NON_RESIDENT", "FIT_HIGHER_WITHHOLDING", "SIT_WITHHOLDING_EXEMPTION"}
+BOOL_FIELDS = {
+    "FIT_WITHHOLDING_EXEMPTION",
+    "FIT_WITHHOLD_AS_NON_RESIDENT",
+    "FIT_HIGHER_WITHHOLDING",
+    "SIT_WITHHOLDING_EXEMPTION",
+}
 FILING_FIELDS = {"FIT_FILING_STATUS", "SIT_FILING_STATUS"}
+
+def filing_status_token_from_adp(adp_val: str) -> str:
+    """
+    Normalize ADP filing status to stable tokens.
+    Specifically handle:
+      "Married filing jointly or Qualifying surviving spouse"
+    """
+    s = cf(adp_val)
+    if s == "":
+        return ""
+    # tolerant matching
+    if "married filing jointly" in s:
+        # ADP can be exactly the long value or shorter; both should map to MFJ
+        # The user rule: if UZIO is FEDERAL_MARRIED_JOINTLY and ADP is the long label, it's a match.
+        return "MFJ_QSS"
+    if "qualifying surviving spouse" in s:
+        return "MFJ_QSS"
+    if "head of household" in s:
+        return "HOH"
+    if "single" in s and "married" not in s:
+        return "SINGLE"
+    if "married filing separately" in s:
+        return "MFS"
+    if "married" in s:
+        return "MARRIED"
+    return s  # fallback
+
+def filing_status_token_from_uzio(uzio_raw, filing_status_map: dict) -> str:
+    """
+    Convert UZIO enum/code to a token, using the code itself plus map label as needed.
+    Includes your special rule:
+      UZIO = FEDERAL_MARRIED_JOINTLY should match ADP "Married filing jointly or Qualifying surviving spouse"
+    """
+    raw = safe_str(uzio_raw).strip()
+    if raw == "":
+        return ""
+    raw_uc = raw.upper()
+
+    # Explicit rule requested
+    if raw_uc == "FEDERAL_MARRIED_JOINTLY":
+        return "MFJ_QSS"
+
+    # Try to map enum -> label and then tokenize like ADP
+    label = filing_status_map.get(raw_uc) or filing_status_map.get(raw) or raw
+    # Tokenize based on mapped label (and still tolerant)
+    return filing_status_token_from_adp(label)
 
 def normalize_compare(field: str, uzio_val, adp_val, filing_status_map: dict):
     """
@@ -251,12 +301,10 @@ def normalize_compare(field: str, uzio_val, adp_val, filing_status_map: dict):
     field = norm_colname(field)
 
     if field in FILING_FIELDS:
-        uz = norm_blank(uzio_val)
-        if uz == "":
-            uz_mapped = ""
-        else:
-            uz_mapped = filing_status_map.get(str(uz).strip(), str(uz).strip())
-        return (cf(uz_mapped), cf(adp_val))
+        # --- FIX HERE: special handling for FEDERAL_MARRIED_JOINTLY vs ADP long label ---
+        uz_token = filing_status_token_from_uzio(uzio_val, filing_status_map)
+        adp_token = filing_status_token_from_adp(adp_val)
+        return (uz_token, adp_token)
 
     if field in BOOL_FIELDS:
         return (norm_bool_blank_false(uzio_val), norm_bool_blank_false(adp_val))
@@ -320,16 +368,14 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
     uz["_EFF_DT"] = uz[UZ_EFF].map(try_parse_date) if UZ_EFF else pd.NaT
 
     # --- Build UZIO latest-per-field lookups ---
-    # Employee meta
     meta_cols = [c for c in [UZ_ID, UZ_FN, UZ_LN, UZ_STATUS] if c]
     uz_meta = uz.groupby(UZ_ID, sort=False).head(1)[meta_cols].copy()
     uz_meta = uz_meta.set_index(UZ_ID)
 
-    # Federal (use tax_scope if present)
+    # Federal
     uz_fed = uz.copy()
     if UZ_SCOPE and UZ_SCOPE in uz_fed.columns:
         uz_fed = uz_fed[uz_fed[UZ_SCOPE].astype(str).str.upper().eq("FEDERAL")]
-    # pick latest effective per (emp, field_key)
     uz_fed = uz_fed.sort_values("_EFF_DT").groupby([UZ_ID, UZ_KEY], as_index=False).tail(1)
     uz_fed_lookup = {(str(r[UZ_ID]), str(r[UZ_KEY])): r[UZ_VAL] for _, r in uz_fed.iterrows()}
 
@@ -348,7 +394,7 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
     adp[ADP_ID] = adp[ADP_ID].map(lambda x: safe_str(x).strip())
     adp_emp_latest = adp.groupby(ADP_ID, sort=False).apply(pick_latest_adp_row).reset_index(drop=True)
 
-    # State rows latest per (emp, state_code) (use fed effective dt as "latest" proxy)
+    # State rows latest per (emp, state_code)
     if ADP_STATE and ADP_STATE in adp.columns:
         tmp = adp.copy()
         tmp["_STATE_CODE"] = tmp[ADP_STATE].map(lambda x: safe_str(x).strip().upper())
@@ -356,7 +402,9 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
         adp_state_latest = tmp.groupby([ADP_ID, "_STATE_CODE"], as_index=False).tail(1)
         adp_state_latest = adp_state_latest.set_index([ADP_ID, "_STATE_CODE"])
     else:
-        adp_state_latest = pd.DataFrame().set_index(pd.MultiIndex.from_arrays([[], []], names=[ADP_ID, "_STATE_CODE"]))
+        adp_state_latest = pd.DataFrame().set_index(
+            pd.MultiIndex.from_arrays([[], []], names=[ADP_ID, "_STATE_CODE"])
+        )
 
     adp_emp_latest = adp_emp_latest.set_index(ADP_ID)
 
@@ -367,7 +415,10 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
 
     uz_states = set()
     if len(uz_state):
-        uz_states = set((str(r[UZ_ID]), str(r["_STATE_CODE"])) for _, r in uz_state[[UZ_ID, "_STATE_CODE"]].drop_duplicates().iterrows())
+        uz_states = set(
+            (str(r[UZ_ID]), str(r["_STATE_CODE"]))
+            for _, r in uz_state[[UZ_ID, "_STATE_CODE"]].drop_duplicates().iterrows()
+        )
     adp_states = set()
     if not adp_state_latest.empty:
         adp_states = set((str(i[0]), str(i[1])) for i in adp_state_latest.index)
@@ -379,7 +430,7 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
         uz_field = norm_colname(m["UZIO_Field"])
         adp_col = norm_colname(m["ADP_Column"])
 
-        # Employee-level fields (no jurisdiction)
+        # Employee-level fields
         if uz_field in {"employee_id", "employee_first_name", "employee_last_name"}:
             for emp_id in all_emp_ids:
                 uz_exists = emp_id in uz_meta.index.astype(str)
@@ -388,20 +439,19 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
                 uz_val = ""
                 if uz_exists and uz_field in {"employee_first_name", "employee_last_name"}:
                     col = UZ_FN if uz_field == "employee_first_name" else UZ_LN
-                    if col and col in uz_meta.columns:
-                        uz_val = uz_meta.loc[emp_id, col] if emp_id in uz_meta.index else ""
+                    if col and col in uz_meta.columns and emp_id in uz_meta.index:
+                        uz_val = uz_meta.loc[emp_id, col]
                 elif uz_field == "employee_id":
                     uz_val = emp_id if uz_exists else ""
 
                 adp_val = ""
-                if adp_exists and adp_col in adp_emp_latest.columns:
-                    adp_val = adp_emp_latest.loc[emp_id, adp_col] if emp_id in adp_emp_latest.index else ""
+                if adp_exists and adp_col in adp_emp_latest.columns and emp_id in adp_emp_latest.index:
+                    adp_val = adp_emp_latest.loc[emp_id, adp_col]
 
                 emp_status = ""
                 if UZ_STATUS and uz_exists and UZ_STATUS in uz_meta.columns and emp_id in uz_meta.index:
                     emp_status = uz_meta.loc[emp_id, UZ_STATUS]
 
-                # status resolution
                 if uz_exists and not adp_exists:
                     status = "MISSING_IN_ADP"
                 elif adp_exists and not uz_exists:
@@ -444,7 +494,11 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
                     emp_status = uz_meta.loc[emp_id, UZ_STATUS]
 
                 uz_val = uz_fed_lookup.get((emp_id, uz_field), "") if uz_exists else ""
-                adp_val = adp_emp_latest.loc[emp_id, adp_col] if (adp_exists and adp_col in adp_emp_latest.columns and emp_id in adp_emp_latest.index) else ""
+                adp_val = (
+                    adp_emp_latest.loc[emp_id, adp_col]
+                    if (adp_exists and adp_col in adp_emp_latest.columns and emp_id in adp_emp_latest.index)
+                    else ""
+                )
 
                 if uz_exists and not adp_exists:
                     status = "MISSING_IN_ADP"
@@ -490,7 +544,11 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
                 uz_val = uz_state_lookup.get((emp_id, state_code, uz_field), "") if uz_exists else ""
 
                 adp_val = ""
-                if not adp_state_latest.empty and (emp_id, state_code) in adp_state_latest.index and adp_col in adp_state_latest.columns:
+                if (
+                    not adp_state_latest.empty
+                    and (emp_id, state_code) in adp_state_latest.index
+                    and adp_col in adp_state_latest.columns
+                ):
                     adp_val = adp_state_latest.loc[(emp_id, state_code), adp_col]
 
                 if uz_exists and not adp_exists:
@@ -537,7 +595,7 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
         ],
     )
 
-    # Field Summary (simple pivot like your census tool)
+    # Field Summary
     statuses = [
         "OK",
         "MISMATCH",
@@ -556,10 +614,8 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
                 aggfunc="count",
                 fill_value=0,
             )
-            .reindex(columns=[c for c in statuses if c in comparison_detail["Status"].unique()] + [c for c in statuses if c not in comparison_detail["Status"].unique()], fill_value=0)
             .reset_index()
         )
-        # Ensure all status columns exist
         for c in statuses:
             if c not in field_summary.columns:
                 field_summary[c] = 0
@@ -568,10 +624,8 @@ def run_audit(adp_bytes: bytes, uzio_bytes: bytes) -> bytes:
     else:
         field_summary = pd.DataFrame(columns=["Tax Scope", "Field"] + statuses + ["Total"])
 
-    # Summary (very small like your census utility)
-    # Mismatch rows are anything not OK
+    # Summary
     mismatch_rows = comparison_detail[comparison_detail["Status"].ne("OK")]
-    # Active vs Terminated based on UZIO Employment Status (when present)
     active_mask = mismatch_rows["Employment Status"].astype(str).str.upper().str.contains("ACTIVE", na=False)
     terminated_mask = mismatch_rows["Employment Status"].astype(str).str.upper().str.contains("TERM", na=False)
 
